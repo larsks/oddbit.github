@@ -6,10 +6,14 @@ from fastcore.net import (
     HTTP404NotFoundError,
 )  # noqa: F401
 
-try:
-    from ghapi.all import GhApi
-except ImportError:
-    GhApi = None
+from ghapi.all import GhApi
+from ghapi.page import paged
+
+
+def flatten(oper, *args, **kwargs):
+    for page in paged(oper, *args, **kwargs):
+        for item in page:
+            yield item
 
 
 def common_args():
