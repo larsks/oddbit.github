@@ -4,7 +4,7 @@ import ansible_collections.oddbit.github.plugins.module_utils.github_models as g
 
 class Module(github_helper.GithubModule):
     class Model(github_models.ModuleCommonParameters):
-        state: github_models.StateEnum
+        state: github_models.StateEnum = github_models.pydantic.Field(default="present")
         repo: str
         exclusive: bool | None = github_models.pydantic.Field(default=False)
         labels: github_models.LabelList
