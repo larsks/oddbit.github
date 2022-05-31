@@ -1,97 +1,123 @@
-from ansible.module_utils.basic import AnsibleModule
-
 import ansible_collections.oddbit.github.plugins.module_utils.github_helper as github_helper
+import ansible_collections.oddbit.github.plugins.module_utils.github_models as github_models
 
 
-def list_members(api, name, role):
-    return [
-        m["login"]
-        for m in github_helper.flatten(
-            api.teams.list_members_in_org, team_slug=name, role=role
+class Module(github_helper.GithubModule):
+    class Model(github_models.ModuleCommonParameters):
+        state: github_models.StateEnum = github_models.pydantic.Field(default="present")
+        organization: str
+        team: github_models.TeamMembersRequest
+
+    def module_args(self):
+        return dict(
+            organization=dict(type="str", required=True),
+            state=dict(type="str"),
+            team=dict(type="dict"),
         )
-    ]
+
+    def list_members(self, org, name, role=None):
+        return [
+            m["login"]
+            for m in github_helper.flatten(
+                self.api.teams.list_members_in_org, org=org, team_slug=name, role=role
+            )
+        ]
+
+    def add_members_to_role(self, org, name, role, members):
+        if not members:
+            return []
+
+        added = []
+        have = self.list_members(org=org, name=name, role=role)
+
+        for member in members:
+            if member not in have:
+                added.append(member)
+                try:
+                    self.api.teams.add_or_update_membership_for_user_in_org(
+                        org=org, team_slug=name, username=member, role=role
+                    )
+                except github_helper.HTTPError as err:
+                    self.fail_json(
+                        msg=f"failed to add {member} as {role} to team {name}: {err}"
+                    )
+
+        return added
+
+    def remove_members(self, org, name, members):
+        if not members:
+            return []
+
+        removed = []
+        have = self.list_members(org=org, name=name)
+
+        for member in members:
+            if member in have:
+                removed.append(member)
+                try:
+                    self.api.teams.remove_membership_for_user_in_org(
+                        org=org, team_slug=name, username=member
+                    )
+                except github_helper.HTTPError as err:
+                    self.fail_json(
+                        msg=f"failed to remove {member} from team {name}: {err}"
+                    )
+
+        return removed
+
+    def run(self):
+        try:
+            team = self.find_team_by_name(
+                org=self.data.organization, name=self.data.team.name
+            )
+        except github_helper.HTTP404NotFoundError:
+            self.fail_json(msg=f"failed to lookup team {self.data.team.name}")
+
+        added: list[str] = []
+        removed: list[str] = []
+
+        results = {
+            "organization": self.data.organization,
+            "changed": False,
+            "github": {
+                "team": team,
+            },
+            "added": added,
+            "removed": removed,
+        }
+
+        if self.data.state == "present":
+            added.extend(
+                self.add_members_to_role(
+                    self.data.organization,
+                    team.slug,
+                    "maintainer",
+                    self.data.team.maintainers,
+                )
+            )
+            added.extend(
+                self.add_members_to_role(
+                    self.data.organization,
+                    team.slug,
+                    "member",
+                    self.data.team.members,
+                )
+            )
+        elif self.data.state == "absent":
+            removed.extend(
+                self.remove_members(
+                    self.data.organization,
+                    team.slug,
+                    (self.data.team.maintainers or []) + (self.data.team.members or []),
+                )
+            )
+
+        results["changed"] = bool(added or removed)
+        self.exit_json(**results)
 
 
 def main():
-    module_args = github_helper.common_args()
-    module_args.update(
-        dict(
-            name=dict(type="str", required=True),
-            organization=dict(type="str", required=True),
-            state=dict(type="str", default="present", choices=["present", "absent"]),
-            members=dict(type="list", default=[]),
-            maintainers=dict(type="list", default=[]),
-            exclusive=dict(type="bool", default=False),
-        )
-    )
-
-    module = AnsibleModule(argument_spec=module_args)
-    api = github_helper.login(module, org=module.params["organization"])
-    added_members = []
-    added_maintainers = []
-    removed = []
-    result = dict(
-        changed=False,
-        name=module.params["name"],
-        organization=module.params["organization"],
-        added_members=added_members,
-        added_maintainers=added_maintainers,
-        removed=removed,
-    )
-
-    if module.params["exclusive"] and module.params["state"] == "absent":
-        module.fail_json(msg="using exclusive with state=absent is not supported")
-
-    try:
-        team = api.teams.get_by_name(module.params["name"])
-    except github_helper.HTTPError as err:
-        module.fail_json(msg=f"failed to look up team: {err}")
-
-    try:
-        members = list_members(api, team["slug"], "member")
-        maintainers = list_members(api, team["slug"], "maintainer")
-
-        for member in module.params["maintainers"]:
-            if member not in maintainers and module.params["state"] == "present":
-                added_maintainers.append(member)
-                api.teams.add_or_update_membership_for_user_in_org(
-                    team["slug"], member, "maintainer"
-                )
-            elif member in maintainers and module.params["state"] == "absent":
-                removed.append(member)
-                api.teams.remove_membership_for_user_in_org(team["slug"], member)
-        for member in module.params["members"]:
-            if member not in members and module.params["state"] == "present":
-                added_members.append(member)
-                api.teams.add_or_update_membership_for_user_in_org(
-                    team["slug"], member, "member"
-                )
-            elif member in members and module.params["state"] == "absent":
-                removed.append(member)
-                api.teams.remove_membership_for_user_in_org(team["slug"], member)
-
-        if module.params["exclusive"] and module.params["state"] == "present":
-            for member in members:
-                if member not in module.params["members"]:
-                    removed.append(member)
-                    api.teams.remove_membership_for_user_in_org(team["slug"], member)
-            for member in maintainers:
-                if member not in module.params["maintainers"]:
-                    removed.append(member)
-                    api.teams.remove_membership_for_user_in_org(team["slug"], member)
-
-        # Update lists after changes
-
-        members = list_members(api, team["slug"], "member")
-        maintainers = list_members(api, team["slug"], "maintainer")
-
-        result["members"] = members
-        result["maintainers"] = maintainers
-    except github_helper.HTTPError as err:
-        module.fail_json(msg=f"failed to update team: {err}")
-
-    result["changed"] = bool(removed or added_members or added_maintainers)
-    module.exit_json(**result)
+    Module().run()
 
 
 if __name__ == "__main__":

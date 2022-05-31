@@ -78,6 +78,12 @@ class TeamRequest(BaseModel):
     privacy: TeamPrivacyEnum | None
 
 
+class TeamMembersRequest(BaseModel):
+    name: str
+    members: list[str] | None
+    maintainers: list[str] | None
+
+
 class Team(BaseModel):
     name: str | None
     team_slug: str | None = pydantic.Field(alias="slug")
