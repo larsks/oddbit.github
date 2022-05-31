@@ -68,6 +68,37 @@ class GithubModule(AnsibleModule):
         self.api = ghapi.all.GhApi(token=token, gh_host=self.data.github_url, **kwargs)
         self.user = self.api.users.get_authenticated()
 
+    def list_teams(self):
+        return flatten(
+            self.api.teams.list,
+            org=self.data.organization,
+        )
+
+    def find_team_by_name(self, org, name):
+        """Github creates teams by name but searches by slug.
+
+        Rather than try to reproduce the slugify algorithm, we first
+        treat the team name as a slug, and if we find it, we're all done.
+        If we don't find it, then we get a list of all organization teams
+        and look for one with a matching name.
+        """
+
+        try:
+            return self.api.teams.get_by_name(
+                org=self.data.organization, team_slug=name
+            )
+        except HTTP404NotFoundError:
+            for team in self.list_teams():
+                if team["name"] == name:
+                    found = team
+                    break
+            else:
+                raise
+
+            return self.api.teams.get_by_name(
+                org=self.data.organization, team_slug=found["slug"]
+            )
+
 
 def flatten(oper, *args, **kwargs):
     for page in ghapi.all.paged(oper, *args, **kwargs):

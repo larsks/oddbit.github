@@ -26,6 +26,7 @@ class CollaboratorPermissionsEnum(str, Enum):
 class BaseModel(pydantic.BaseModel):
     class Config:
         use_enum_values = True
+        allow_population_by_field_name = True
 
     def dict(self, **kwargs):
         kwargs = {"exclude_defaults": True, "exclude_unset": True} | kwargs
@@ -71,11 +72,25 @@ class User(BaseModel):
     email: str | None
 
 
+class TeamRequest(BaseModel):
+    name: str
+    description: str | None
+    privacy: TeamPrivacyEnum | None
+
+
 class Team(BaseModel):
     name: str | None
-    slug: str
+    team_slug: str | None = pydantic.Field(alias="slug")
     description: str | None
     privacy: TeamPrivacyEnum
+
+    @classmethod
+    def fromTeamRequest(cls, tr):
+        return cls(
+            name=tr.name,
+            description=tr.description,
+            privacy=tr.privacy,
+        )
 
 
 class CollaboratorPermissionsMap(BaseModel):
