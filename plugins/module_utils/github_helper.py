@@ -10,17 +10,11 @@ import ansible_collections.oddbit.github.plugins.module_utils.github_models as m
 
 
 class GithubModule(AnsibleModule):
-    Model = models.ModuleCommonParameters
-
     def __init__(self, **kwargs):
         argspec = self.common_args() | self.module_args()
         super().__init__(argspec)
 
-        try:
-            self.data = self.Model(**self.params)
-            self.login(**kwargs)
-        except models.pydantic.ValidationError as err:
-            self.fail_json(msg=f"Invalid module parameters: {err}", errors=err.errors())
+        self.login(**kwargs)
 
     def parse_repo_name(self, fqrn):
         try:
@@ -64,15 +58,14 @@ class GithubModule(AnsibleModule):
         self.exit_json(changed=False, msg="This module does nothing")
 
     def login(self, **kwargs):
-        token = self.data.github_token
-        self.api = ghapi.all.GhApi(token=token, gh_host=self.data.github_url, **kwargs)
+        token = self.params["github_token"]
+        self.api = ghapi.all.GhApi(
+            token=token, gh_host=self.params["github_url"], **kwargs
+        )
         self.user = self.api.users.get_authenticated()
 
     def list_teams(self):
-        return flatten(
-            self.api.teams.list,
-            org=self.data.organization,
-        )
+        return flatten(self.api.teams.list, org=self.params["organization"])
 
     def find_team_by_name(self, org, name):
         """Github creates teams by name but searches by slug.
@@ -85,7 +78,7 @@ class GithubModule(AnsibleModule):
 
         try:
             return self.api.teams.get_by_name(
-                org=self.data.organization, team_slug=name
+                org=self.params["organization"], team_slug=name
             )
         except HTTP404NotFoundError:
             for team in self.list_teams():
@@ -96,7 +89,7 @@ class GithubModule(AnsibleModule):
                 raise
 
             return self.api.teams.get_by_name(
-                org=self.data.organization, team_slug=found["slug"]
+                org=self.params["organization"], team_slug=found["slug"]
             )
 
 

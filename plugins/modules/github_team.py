@@ -5,87 +5,87 @@ import ansible_collections.oddbit.github.plugins.module_utils.github_models as g
 
 
 class Module(github_helper.GithubModule):
-    class Model(github_models.ModuleCommonParameters):
-        state: github_models.StateEnum = github_models.pydantic.Field(default="present")
-        organization: str
-        team: github_models.TeamRequest
-
     def module_args(self):
         return dict(
-            state=dict(type="str"),
+            state=dict(
+                type="str", choices=github_models.StateEnum.values(), default="present"
+            ),
             organization=dict(type="str", required=True),
-            team=dict(type="dict"),
+            team=dict(
+                type="dict",
+                options=dict(
+                    name=dict(type="str", required=True),
+                    description=dict(type="str"),
+                    privacy=dict(
+                        type="str", choices=github_models.TeamPrivacyEnum.values()
+                    ),
+                ),
+            ),
         )
 
     def run(self):
         try:
             team = self.find_team_by_name(
-                org=self.data.organization, name=self.data.team.name
+                org=self.params["organization"], name=self.params["team"]["name"]
             )
         except github_helper.HTTP404NotFoundError:
             exists = False
             team = {}
         except github_helper.HTTPError as err:
-            self.fail_json(msg=f"failed to look up team {self.data.team.name}: {err}")
+            self.fail_json(
+                msg=f"failed to look up team {self.params['team']['name']}: {err}"
+            )
         else:
             exists = True
 
         results = {
             "changed": False,
-            "exists": exists,
-            "name": self.data.team.name,
-            "organization": self.data.organization,
-            "github": {"team": team},
+            "team": team,
         }
 
-        if exists and self.data.state == "present":
+        if exists and self.params["state"] == "present":
             results["op"] = "update"
 
             have = github_models.Team(**team)
-            want = github_models.Team.fromTeamRequest(self.data.team)
-            patch = github_models.Team(
-                **{
-                    **have.dict(),
-                    **want.dict(),
-                }
-            )
+            want = github_models.Team(**self.params["team"])
+            patch = github_models.Team(**(have.dict() | want.dict()))
             if have != patch:
                 results["changed"] = True
                 try:
                     self.api.teams.update_in_org(
-                        org=self.data.organization, **patch.dict()
+                        org=self.params["organization"], **patch.dict()
                     )
-                    results["github"]["team"] = self.api.teams.get_by_name(
-                        org=self.data.organization,
+                    results["team"] = self.api.teams.get_by_name(
+                        org=self.params["organization"],
                         team_slug=have.team_slug,
                     )
                 except github_helper.HTTPError as err:
                     self.fail_json(
-                        msg=f"failed to update team {self.data.team.name}: {err}"
+                        msg=f"failed to update team {self.params['team']['name']}: {err}"
                     )
-        elif not exists and self.data.state == "present":
+        elif not exists and self.params["state"] == "present":
             results["op"] = "create"
             results["changed"] = True
 
-            want = github_models.Team.fromTeamRequest(self.data.team)
+            want = github_models.Team(**self.params["team"])
             try:
-                results["github"]["team"] = self.api.teams.create(
-                    org=self.data.organization, **want.dict()
+                results["team"] = self.api.teams.create(
+                    org=self.params["organization"], **want.dict()
                 )
             except github_helper.HTTPError as err:
                 self.fail_json(
-                    msg=f"failed to create team {self.data.team.name}: {err}"
+                    msg=f"failed to create team {self.params['team']['name']}: {err}"
                 )
-        elif exists and self.data.state == "absent":
+        elif exists and self.params["state"] == "absent":
             results["op"] = "delete"
             results["changed"] = True
             try:
                 self.api.teams.delete_in_org(
-                    org=self.data.organization, team_slug=team.slug
+                    org=self.params["organization"], team_slug=team.slug
                 )
             except github_helper.HTTPError as err:
                 self.fail_json(
-                    msg=f"failed to delete team {self.data.team.name}: {err}"
+                    msg=f"failed to delete team {self.params['team']['name']}: {err}"
                 )
 
         self.exit_json(**results)

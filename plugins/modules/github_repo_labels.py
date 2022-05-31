@@ -3,92 +3,119 @@ import ansible_collections.oddbit.github.plugins.module_utils.github_models as g
 
 
 class Module(github_helper.GithubModule):
-    class Model(github_models.ModuleCommonParameters):
-        state: github_models.StateEnum = github_models.pydantic.Field(default="present")
-        repo: str
-        exclusive: bool | None = github_models.pydantic.Field(default=False)
-        labels: github_models.LabelList
-
     def module_args(self):
         return dict(
             repo=dict(type="str", required=True),
             state=dict(type="str"),
             exclusive=dict(type="bool"),
-            labels=dict(type="list"),
+            labels=dict(
+                type="list",
+                options=dict(
+                    name=dict(type="str"),
+                    description=dict(type="str"),
+                    color=dict(type="str"),
+                ),
+            ),
         )
 
     def list_labels(self, reponame):
-        repolabels = github_models.LabelList.parse_obj(
-            list(
-                github_helper.flatten(
-                    self.api.issues.list_labels_for_repo,
-                    owner=reponame.owner,
-                    repo=reponame.name,
-                )
+        return list(
+            github_helper.flatten(
+                self.api.issues.list_labels_for_repo,
+                owner=reponame.owner,
+                repo=reponame.name,
             )
         )
 
-        return repolabels
-
     def run(self):
-        reponame = self.parse_repo_name(self.data.repo)
+        reponame = self.parse_repo_name(self.params["repo"])
 
         try:
-            repolabels = self.list_labels(reponame)
+            havelabels = github_models.LabelList.parse_obj(self.list_labels(reponame))
         except github_helper.HTTPError as err:
             self.fail_json(
                 msg=f"failed to get labels from repository {reponame.fqrn}: {err}"
             )
 
-        added: list[github_models.Label] = []
-        updated: list[github_models.Label] = []
-        deleted: list[github_models.Label] = []
+        wantlabels = github_models.LabelList.parse_obj(self.params["labels"])
+        added: list[dict] = []
+        updated: list[dict] = []
+        deleted: list[dict] = []
 
         results = {
             "repo": reponame.dict(),
             "changed": False,
-            "github": {"labels": repolabels.list()},
+            "labels": havelabels.list(),
             "added": added,
             "updated": updated,
             "deleted": deleted,
         }
 
-        if self.data.state == "present":
-            for label in self.data.labels.__root__:
-                have = repolabels.get(label.name)
-
-                if have is None or have != label:
-                    if have is None:
-                        added.append(label.dict())
-                    else:
-                        updated.append(label.dict())
-
+        if self.params["state"] == "present":
+            for label in wantlabels.__root__:
+                have = next(
+                    (x for x in havelabels.__root__ if x.name == label.name), None
+                )
+                if have is None:
+                    added.append(label.dict())
                     try:
                         self.api.issues.create_label(
                             owner=reponame.owner, repo=reponame.name, **label.dict()
                         )
                     except github_helper.HTTPError as err:
-                        self.fail_json(
-                            msg=f"failed to update label {label.name} in repository {reponame.fqrn}: {err}"
-                        )
-            if self.data.exclusive:
-                for label in repolabels.__root__:
-                    if not self.data.labels.has(label.name):
+                        self.fail_json(msg=f"failed to add label {label.name}: {err}")
+                else:
+                    want = github_models.Label(**(have.dict() | label.dict()))
+                    if have != want:
+                        updated.append(label.dict())
+                        try:
+                            self.api.issues.update_label(
+                                owner=reponame.owner, repo=reponame.name, **want.dict()
+                            )
+                        except github_helper.HTTPError as err:
+                            self.fail_json(
+                                msg=f"failed to update label {label.name}: {err}"
+                            )
+            if self.params["exclusive"]:
+                for label in havelabels.__root__:
+                    have = next(
+                        (x for x in wantlabels.__root__ if x.name == label.name), None
+                    )
+                    if have is None:
+                        try:
+                            deleted.append(label.dict())
+                            self.api.issues.delete_label(
+                                owner=reponame.owner,
+                                repo=reponame.name,
+                                name=label.name,
+                            )
+                        except github_helper.HTTPError as err:
+                            self.fail_json(
+                                msg=f"failed to delete label {label.name}: {err}"
+                            )
+        if self.params["state"] == "absent":
+            for label in wantlabels.__root__:
+                have = next(
+                    (x for x in havelabels.__root__ if x.name == label.name), None
+                )
+                if have is not None:
+                    try:
                         deleted.append(label.dict())
                         self.api.issues.delete_label(
-                            owner=reponame.owner, repo=reponame.name, name=label.name
+                            owner=reponame.owner,
+                            repo=reponame.name,
+                            name=label.name,
                         )
-        elif self.data.state == "absent":
-            for label in self.data.labels:
-                if repolabels.has(label.name):
-                    deleted.append(label.dict())
-                    self.api.issues.delete_label(
-                        owner=reponame.owner, repo=reponame.name, name=label.name
-                    )
+                    except github_helper.HTTPError as err:
+                        self.fail_json(
+                            msg=f"failed to delete label {label.name}: {err}"
+                        )
 
         results["changed"] = bool(added or updated or deleted)
         if results["changed"]:
-            results["github"]["labels"] = self.list_labels(reponame).list()
+            havelabels = github_models.LabelList.parse_obj(self.list_labels(reponame))
+            results["labels"] = havelabels.list()
+
         self.exit_json(**results)
 
 

@@ -1,6 +1,11 @@
+import enum
 import pydantic
 
-from enum import Enum
+
+class Enum(enum.Enum):
+    @classmethod
+    def values(cls):
+        return [x.value for x in cls]
 
 
 class StateEnum(str, Enum):
@@ -72,31 +77,11 @@ class User(BaseModel):
     email: str | None
 
 
-class TeamRequest(BaseModel):
-    name: str
-    description: str | None
-    privacy: TeamPrivacyEnum | None
-
-
-class TeamMembersRequest(BaseModel):
-    name: str
-    members: list[str] | None
-    maintainers: list[str] | None
-
-
 class Team(BaseModel):
     name: str | None
     team_slug: str | None = pydantic.Field(alias="slug")
     description: str | None
     privacy: TeamPrivacyEnum
-
-    @classmethod
-    def fromTeamRequest(cls, tr):
-        return cls(
-            name=tr.name,
-            description=tr.description,
-            privacy=tr.privacy,
-        )
 
 
 class CollaboratorPermissionsMap(BaseModel):

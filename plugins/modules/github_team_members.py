@@ -3,22 +3,27 @@ import ansible_collections.oddbit.github.plugins.module_utils.github_models as g
 
 
 class Module(github_helper.GithubModule):
-    class Model(github_models.ModuleCommonParameters):
-        state: github_models.StateEnum = github_models.pydantic.Field(default="present")
-        organization: str
-        team: github_models.TeamMembersRequest
-
     def module_args(self):
         return dict(
+            state=dict(
+                type="str", choices=github_models.StateEnum.values(), default="present"
+            ),
             organization=dict(type="str", required=True),
-            state=dict(type="str"),
-            team=dict(type="dict"),
+            team=dict(
+                type="dict",
+                options=dict(
+                    name=dict(type="str", required=True),
+                    members=dict(type="list", default=[]),
+                    maintainers=dict(type="list", default=[]),
+                    exclusive=dict(type="bool"),
+                ),
+            ),
         )
 
     def list_members(self, org, name, role=None):
         return [
-            m["login"]
-            for m in github_helper.flatten(
+            member["login"]
+            for member in github_helper.flatten(
                 self.api.teams.list_members_in_org, org=org, team_slug=name, role=role
             )
         ]
@@ -68,16 +73,16 @@ class Module(github_helper.GithubModule):
     def run(self):
         try:
             team = self.find_team_by_name(
-                org=self.data.organization, name=self.data.team.name
+                org=self.params["organization"], name=self.params["team"]["name"]
             )
         except github_helper.HTTP404NotFoundError:
-            self.fail_json(msg=f"failed to lookup team {self.data.team.name}")
+            self.fail_json(msg=f"failed to lookup team {self.params['team']['name']}")
 
         added: list[str] = []
         removed: list[str] = []
 
         results = {
-            "organization": self.data.organization,
+            "organization": self.params["organization"],
             "changed": False,
             "github": {
                 "team": team,
@@ -86,33 +91,51 @@ class Module(github_helper.GithubModule):
             "removed": removed,
         }
 
-        if self.data.state == "present":
+        all_members = (
+            self.params["team"]["members"] + self.params["team"]["maintainers"]
+        )
+
+        if self.params["state"] == "present":
             added.extend(
                 self.add_members_to_role(
-                    self.data.organization,
+                    self.params["organization"],
                     team.slug,
                     "maintainer",
-                    self.data.team.maintainers,
+                    self.params["team"]["maintainers"],
                 )
             )
             added.extend(
                 self.add_members_to_role(
-                    self.data.organization,
+                    self.params["organization"],
                     team.slug,
                     "member",
-                    self.data.team.members,
+                    self.params["team"]["members"],
                 )
             )
-        elif self.data.state == "absent":
+            if self.params["team"]["exclusive"]:
+                for member in self.list_members(
+                    org=self.params["organization"], name=team.slug
+                ):
+                    if member not in all_members:
+                        removed.append(member)
+                        self.api.teams.remove_membership_for_user_in_org(
+                            org=self.params["organization"],
+                            team_slug=team.slug,
+                            username=member,
+                        )
+
+        elif self.params["state"] == "absent":
             removed.extend(
-                self.remove_members(
-                    self.data.organization,
-                    team.slug,
-                    (self.data.team.maintainers or []) + (self.data.team.members or []),
-                )
+                self.remove_members(self.params["organization"], team.slug, all_members)
             )
 
         results["changed"] = bool(added or removed)
+        results["maintainers"] = self.list_members(
+            org=self.params["organization"], name=team.slug, role="maintainer"
+        )
+        results["members"] = self.list_members(
+            org=self.params["organization"], name=team.slug, role="member"
+        )
         self.exit_json(**results)
 
 
